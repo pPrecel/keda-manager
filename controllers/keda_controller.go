@@ -18,7 +18,6 @@ package controllers
 
 import (
 	"context"
-	"k8s.io/client-go/tools/record"
 
 	"github.com/kyma-project/keda-manager/api/v1alpha1"
 	"github.com/kyma-project/keda-manager/pkg/reconciler"
@@ -27,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -114,6 +114,7 @@ func (r *kedaReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// create functtion to register wached objects
 	watchFn := func(u unstructured.Unstructured) {
+		r.log.With("gvk", u.GroupVersionKind().String()).Infoln("adding watcher")
 		b = b.Watches(
 			&source.Kind{Type: &u},
 			handler.EnqueueRequestsFromMapFunc(r.mapFunction),

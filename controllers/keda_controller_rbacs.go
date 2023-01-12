@@ -5,9 +5,9 @@ package controllers
 //+kubebuilder:rbac:groups="",resources=configmaps;configmaps/status;events;services,verbs="*"
 //+kubebuilder:rbac:groups="",resources=external;pods;secrets;serviceaccounts,verbs=list;watch;create;delete;update;patch
 //+kubebuilder:rbac:groups="",resources=namespaces,verbs=create;delete
-//+kubebuilder:rbac:groups=apiregistration.k8s.io,resources=apiservices,verbs=create;delete;update;patch
-//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings;clusterroles;rolebindings,verbs=create;delete;update;patch
-//+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=create;delete;update;patch
+//+kubebuilder:rbac:groups=apiregistration.k8s.io,resources=apiservices,verbs=create;delete;update;patch;watch;list
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings;clusterroles;rolebindings,verbs=create;delete;update;patch;watch;list
+//+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=create;delete;update;patch;watch;list
 //+kubebuilder:rbac:groups="*",resources="*/scale",verbs="*"
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=list;watch;create;delete;update;patch
 //+kubebuilder:rbac:groups=apps,resources=statefulsets;replicasets,verbs=list;watch
