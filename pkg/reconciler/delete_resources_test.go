@@ -2,8 +2,11 @@ package reconciler
 
 import (
 	"context"
+	"errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"reflect"
 	"runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"testing"
 
 	"github.com/kyma-project/keda-manager/api/v1alpha1"
@@ -107,7 +110,10 @@ func Test_sFnDeleteResources(t *testing.T) {
 		stateFn, result, err := sFnDeleteResources(context.Background(), &fsm{}, &system)
 		require.NoError(t, err)
 		require.Nil(t, result)
-		require.Equal(t, fnName(stateFn), fnName(sFnEmitStrictEventFunc(nil, nil, nil, "test-type", "test-reason", "test-message")))
+		require.Equal(t,
+			fnName(sFnUpdateStatus(&ctrl.Result{Requeue: true}, nil)),
+			fnName(stateFn),
+		)
 	})
 
 	t.Run("choose right deletion strategy", func(t *testing.T) {
@@ -118,6 +124,9 @@ func Test_sFnDeleteResources(t *testing.T) {
 						{
 							Type: string(v1alpha1.ConditionTypeInstalled),
 						},
+						{
+							Type: string(v1alpha1.ConditionTypeDeleted),
+						},
 					},
 				},
 			},
@@ -126,7 +135,10 @@ func Test_sFnDeleteResources(t *testing.T) {
 		stateFn, result, err := sFnDeleteResources(context.Background(), &fsm{}, &system)
 		require.NoError(t, err)
 		require.Nil(t, result)
-		require.Equal(t, fnName(stateFn), fnName(sFnEmitStrictEventFunc(nil, nil, nil, "test-type", "test-reason", "test-message")))
+		require.Equal(t,
+			fnName(sFnSafeDeletionState),
+			fnName(stateFn),
+		)
 	})
 }
 
@@ -146,11 +158,25 @@ func Test_sFnDeleteStrategy(t *testing.T) {
 		}
 
 		strategyFn := deletionStrategyBuilder(cascadeDeletionStrategy)
+		require.Equal(t,
+			fnName(sFnCascadeDeletionState),
+			fnName(strategyFn),
+		)
 
-		fn, resp, err := strategyFn(ctx, r, &systemState{})
+		s := systemState{}
+		fn, resp, err := strategyFn(ctx, r, &s)
 		require.Nil(t, resp)
 		require.NoError(t, err)
-		require.Equal(t, fnName(fn), fnName(sFnEmitStrictEventFunc(nil, nil, nil, "test-type", "test-reason", "test-message")))
+		require.Equal(t,
+			fnName(sFnRemoveFinalizer),
+			fnName(fn),
+		)
+
+		require.Equal(t, v1alpha1.StateDeleting, s.instance.Status.State)
+		conditionDeleted := meta.FindStatusCondition(s.instance.Status.Conditions, string(v1alpha1.ConditionTypeDeleted))
+		require.NotNil(t, conditionDeleted)
+		require.Equal(t, string(v1alpha1.ConditionReasonDeleted), conditionDeleted.Reason)
+		require.Equal(t, "Keda module deleted", conditionDeleted.Message)
 
 		// check deletion progress
 		require.False(t, canGetFakeResource(client, testDeployment))
@@ -173,11 +199,25 @@ func Test_sFnDeleteStrategy(t *testing.T) {
 		}
 
 		strategyFn := deletionStrategyBuilder(upstreamDeletionStrategy)
+		require.Equal(t,
+			fnName(sFnUpstreamDeletionState),
+			fnName(strategyFn),
+		)
 
-		fn, resp, err := strategyFn(ctx, r, &systemState{})
+		s := systemState{}
+		fn, resp, err := strategyFn(ctx, r, &s)
 		require.Nil(t, resp)
 		require.NoError(t, err)
-		require.Equal(t, fnName(fn), fnName(sFnEmitStrictEventFunc(nil, nil, nil, "test-type", "test-reason", "test-message")))
+		require.Equal(t,
+			fnName(sFnRemoveFinalizer),
+			fnName(fn),
+		)
+
+		require.Equal(t, v1alpha1.StateDeleting, s.instance.Status.State)
+		conditionDeleted := meta.FindStatusCondition(s.instance.Status.Conditions, string(v1alpha1.ConditionTypeDeleted))
+		require.NotNil(t, conditionDeleted)
+		require.Equal(t, string(v1alpha1.ConditionReasonDeleted), conditionDeleted.Reason)
+		require.Equal(t, "Keda module deleted", conditionDeleted.Message)
 
 		// check deletion progress
 		require.False(t, canGetFakeResource(client, testDeployment))
@@ -201,10 +241,22 @@ func Test_sFnDeleteStrategy(t *testing.T) {
 
 		strategyFn := deletionStrategyBuilder(safeDeletionStrategy)
 
-		fn, resp, err := strategyFn(ctx, r, &systemState{})
+		require.Equal(t, fnName(sFnSafeDeletionState), fnName(strategyFn))
+
+		s := systemState{}
+		fn, resp, err := strategyFn(ctx, r, &s)
 		require.Nil(t, resp)
 		require.NoError(t, err)
-		require.Equal(t, fnName(fn), fnName(sFnEmitStrictEventFunc(nil, nil, nil, "test-type", "test-reason", "test-message")))
+		require.Equal(t,
+			fnName(sFnRemoveFinalizer),
+			fnName(fn),
+		)
+
+		require.Equal(t, v1alpha1.StateDeleting, s.instance.Status.State)
+		conditionDeleted := meta.FindStatusCondition(s.instance.Status.Conditions, string(v1alpha1.ConditionTypeDeleted))
+		require.NotNil(t, conditionDeleted)
+		require.Equal(t, string(v1alpha1.ConditionReasonDeleted), conditionDeleted.Reason)
+		require.Equal(t, "Keda module deleted", conditionDeleted.Message)
 
 		// check deletion progress
 		require.False(t, canGetFakeResource(client, testDeployment))
@@ -213,12 +265,14 @@ func Test_sFnDeleteStrategy(t *testing.T) {
 	})
 
 	t.Run("safe delete with orphan resources error", func(t *testing.T) {
+		// cluster objects
 		clientBuilder := fake.NewClientBuilder().
 			WithObjects(&testDeployment, &testEmptyCRD, &testService, &testCRD, &testCR)
 		client := clientBuilder.Build()
 		ctx := context.Background()
+		// state should find testCR (in cluster) based on testCRD and return error
 		objs := []unstructured.Unstructured{
-			testDeployment, testEmptyCRD, testService,
+			testDeployment, testCRD, testService,
 		}
 		r := &fsm{
 			log: zap.NewNop().Sugar(),
@@ -228,11 +282,25 @@ func Test_sFnDeleteStrategy(t *testing.T) {
 
 		strategy := "" // empty string should be resolved as safeDeletionStrategy
 		strategyFn := deletionStrategyBuilder(deletionStrategy(strategy))
+		require.Equal(t,
+			fnName(sFnSafeDeletionState),
+			fnName(strategyFn),
+		)
 
-		fn, resp, err := strategyFn(ctx, r, &systemState{})
+		s := systemState{}
+		fn, resp, err := strategyFn(ctx, r, &s)
 		require.Nil(t, resp)
 		require.NoError(t, err)
-		require.Equal(t, fnName(fn), fnName(sFnEmitStrictEventFunc(nil, nil, nil, "test-type", "test-reason", "test-message")))
+		require.Equal(t,
+			fnName(sFnUpdateStatus(nil, errors.New("test-error"))),
+			fnName(fn),
+		)
+
+		require.Equal(t, v1alpha1.StateError, s.instance.Status.State)
+		conditionDeleted := meta.FindStatusCondition(s.instance.Status.Conditions, string(v1alpha1.ConditionTypeDeleted))
+		require.NotNil(t, conditionDeleted)
+		require.Equal(t, string(v1alpha1.ConditionReasonDeletionErr), conditionDeleted.Reason)
+		require.Equal(t, "found 1 items with VersionKind testgroup.io/v1", conditionDeleted.Message)
 
 		// check deletion progress
 		require.True(t, canGetFakeResource(client, testDeployment))
@@ -240,6 +308,37 @@ func Test_sFnDeleteStrategy(t *testing.T) {
 		require.True(t, canGetFakeResource(client, testService))
 		require.True(t, canGetFakeResource(client, testCRD))
 		require.True(t, canGetFakeResource(client, testCR))
+	})
+}
+
+func Test_deleteResourcesWithFilter(t *testing.T) {
+	t.Run("manage errors", func(t *testing.T) {
+		client := fake.NewClientBuilder().Build()
+		ctx := context.Background()
+		objs := []unstructured.Unstructured{
+			{},
+			{},
+		}
+		r := &fsm{
+			log: zap.NewNop().Sugar(),
+			K8s: K8s{Client: client},
+			Cfg: Cfg{Objs: objs},
+		}
+
+		s := systemState{}
+		fn, resp, err := deleteResourcesWithFilter(ctx, r, &s)
+		require.Nil(t, resp)
+		require.NoError(t, err)
+		require.Equal(t,
+			fnName(sFnUpdateStatus(nil, errors.New("test-error"))),
+			fnName(fn),
+		)
+
+		require.Equal(t, v1alpha1.StateError, s.instance.Status.State)
+		conditionDeleted := meta.FindStatusCondition(s.instance.Status.Conditions, string(v1alpha1.ConditionTypeDeleted))
+		require.NotNil(t, conditionDeleted)
+		require.Equal(t, string(v1alpha1.ConditionReasonDeletionErr), conditionDeleted.Reason)
+		require.Equal(t, "Object 'Kind' is missing in 'unstructured object has no kind'\nObject 'Kind' is missing in 'unstructured object has no kind'", conditionDeleted.Message)
 	})
 }
 

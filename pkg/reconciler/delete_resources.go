@@ -2,9 +2,10 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"k8s.io/apimachinery/pkg/api/meta"
 
-	"github.com/go-errors/errors"
 	"github.com/kyma-project/keda-manager/api/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -39,17 +40,10 @@ func fixLeaseObject(leaseName string) unstructured.Unstructured {
 
 func sFnDeleteResources(_ context.Context, _ *fsm, s *systemState) (stateFn, *ctrl.Result, error) {
 	if !isKedaDeleting(s) {
-		s.instance.UpdateStateDeletion()
+		s.instance.UpdateStateDeletion(
+			v1alpha1.ConditionTypeDeleted, v1alpha1.ConditionReasonDeletion, "deletion in progress")
 
-		next, result, stateErr := stopWithRequeue()
-		return switchState(
-			sFnEmitStrictEventFunc(
-				next, result, stateErr,
-				"Normal",
-				"Deletion",
-				"deletion in progress",
-			),
-		)
+		return stopWithRequeue()
 	}
 
 	// TODO: thinkg about deletion configuration
@@ -87,15 +81,8 @@ func sFnUpstreamDeletionState(ctx context.Context, r *fsm, s *systemState) (stat
 
 func sFnSafeDeletionState(ctx context.Context, r *fsm, s *systemState) (stateFn, *ctrl.Result, error) {
 	if err := checkCRDOrphanResources(ctx, r); err != nil {
-		next, result, stateErr := stopWithErrorAndNoRequeue(err)
-		return switchState(
-			sFnEmitStrictEventFunc(
-				next, result, stateErr,
-				"Warning",
-				"Deletion",
-				err.Error(),
-			),
-		)
+		s.instance.UpdateStateFromErr(v1alpha1.ConditionTypeDeleted, v1alpha1.ConditionReasonDeletionErr, err)
+		return stopWithErrorAndNoRequeue(err)
 	}
 
 	return deleteResourcesWithFilter(ctx, r, s)
@@ -108,7 +95,7 @@ func withoutCRDFilter(u unstructured.Unstructured) bool {
 type filterFunc func(unstructured.Unstructured) bool
 
 func deleteResourcesWithFilter(ctx context.Context, r *fsm, s *systemState, filterFunc ...filterFunc) (stateFn, *ctrl.Result, error) {
-	var err error
+	var deletionErrors error
 
 	//ensure lease object will be removed as well
 	kedaOperatorLease := fixLeaseObject(kedaOperatorLeaseName)
@@ -129,35 +116,23 @@ func deleteResourcesWithFilter(ctx context.Context, r *fsm, s *systemState, filt
 			With("gvk", obj.GroupVersionKind()).
 			Debug("deleting")
 
-		err = r.Delete(ctx, &obj)
+		err := r.Delete(ctx, &obj)
 		err = client.IgnoreNotFound(err)
 
 		if err != nil {
 			r.log.With("deleting resource").Error(err)
+			deletionErrors = errors.Join(deletionErrors, err)
 		}
 	}
 
-	if err != nil {
-		next, result, stateErr := stopWithErrorAndNoRequeue(err)
-		return switchState(
-			sFnEmitStrictEventFunc(
-				next, result, stateErr,
-				"Warning",
-				"Deletion",
-				err.Error(),
-			),
-		)
+	if deletionErrors != nil {
+		s.instance.UpdateStateFromErr(v1alpha1.ConditionTypeDeleted, v1alpha1.ConditionReasonDeletionErr, deletionErrors)
+		return stopWithErrorAndNoRequeue(deletionErrors)
 	}
 
-	next, result, stateErr := switchState(sFnRemoveFinalizer)
-	return switchState(
-		sFnEmitStrictEventFunc(
-			next, result, stateErr,
-			"Normal",
-			"Deletion",
-			"Keda module deleted",
-		),
-	)
+	s.instance.UpdateStateDeletionTrue(
+		v1alpha1.ConditionTypeDeleted, v1alpha1.ConditionReasonDeleted, "Keda module deleted")
+	return switchState(sFnRemoveFinalizer)
 }
 
 func fitToFilters(u unstructured.Unstructured, filterFunc ...filterFunc) bool {
@@ -227,5 +202,6 @@ func getCRDStoredVersion(crd apiextensionsv1.CustomResourceDefinition) string {
 }
 
 func isKedaDeleting(s *systemState) bool {
-	return s.instance.Status.State == v1alpha1.StateDeleting
+	conditionDeleted := meta.FindStatusCondition(s.instance.Status.Conditions, string(v1alpha1.ConditionTypeDeleted))
+	return conditionDeleted != nil
 }
