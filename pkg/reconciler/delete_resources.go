@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"k8s.io/apimachinery/pkg/api/meta"
 
 	"github.com/kyma-project/keda-manager/api/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -117,9 +117,8 @@ func deleteResourcesWithFilter(ctx context.Context, r *fsm, s *systemState, filt
 			Debug("deleting")
 
 		err := r.Delete(ctx, &obj)
-		err = client.IgnoreNotFound(err)
 
-		if err != nil {
+		if client.IgnoreNotFound(err) != nil {
 			r.log.With("deleting resource").Error(err)
 			deletionErrors = errors.Join(deletionErrors, err)
 		}
@@ -157,7 +156,7 @@ func checkCRDOrphanResources(ctx context.Context, r *fsm) error {
 		}
 
 		err = r.List(ctx, &crdList)
-		if err != nil {
+		if client.IgnoreNotFound(err) != nil {
 			return err
 		}
 
